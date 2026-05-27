@@ -1,14 +1,21 @@
-import { useMemo, useState } from "react";
-import { Check, Plus, ArrowRight, BookmarkCheck, Sparkles } from "lucide-react";
+import { useMemo, useState, useCallback } from "react";
+import { Check, Plus, ArrowRight, BookmarkCheck, Sparkles, LogIn, LogOut, User } from "lucide-react";
 import { STEPS, type Selection, type Item } from "@/lib/meal-data";
+import { useAuth } from "@/lib/auth";
+import { AuthForm } from "@/components/auth-form";
+import { supabase } from "@/lib/supabase";
 
 const FALLBACK_IMG =
   "data:image/svg+xml;utf8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 75'%3E%3Crect width='100' height='75' fill='%23eee'/%3E%3Ctext x='50' y='42' font-size='10' text-anchor='middle' fill='%23999'%3E%F0%9F%8D%B2%3C/text%3E%3C/svg%3E";
 
 export function MealBuilder() {
+  const { user, signOut, loading } = useAuth();
   const [stepIdx, setStepIdx] = useState(0);
   const [selection, setSelection] = useState<Selection>({});
   const [confirmed, setConfirmed] = useState(false);
+  const [showAuth, setShowAuth] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
 
   const step = STEPS[stepIdx];
   const isLast = stepIdx === STEPS.length - 1;
@@ -54,14 +61,50 @@ export function MealBuilder() {
     });
   };
 
+  const handleSaveMeal = useCallback(async () => {
+    if (!user) return;
+    setSaving(true);
+    try {
+      const { error } = await supabase.from("saved_meals").insert({
+        user_id: user.id,
+        selection,
+        calories: summary.cal,
+        protein: summary.protein,
+        carbs: summary.carbs,
+        fat: summary.fat,
+        prep_time: summary.prep,
+      });
+      if (!error) setSaved(true);
+    } finally {
+      setSaving(false);
+    }
+  }, [user, selection, summary]);
+
   const canAdvance = !step.required || selectedIds.length > 0;
   const advance = () => {
     if (isLast) { setConfirmed(true); return; }
     setStepIdx((i) => Math.min(i + 1, STEPS.length - 1));
   };
-  const reset = () => { setSelection({}); setStepIdx(0); setConfirmed(false); };
+  const reset = () => { setSelection({}); setStepIdx(0); setConfirmed(false); setSaved(false); };
 
-  if (confirmed) return <ConfirmedScreen summary={summary} onReset={reset} selection={selection} allItemsFlat={allItemsFlat} />;
+  if (showAuth && !user) {
+    return <AuthForm onSuccess={() => setShowAuth(false)} />;
+  }
+
+  if (confirmed) return (
+    <ConfirmedScreen
+      summary={summary}
+      onReset={reset}
+      selection={selection}
+      allItemsFlat={allItemsFlat}
+      user={user}
+      saving={saving}
+      saved={saved}
+      onSave={handleSaveMeal}
+      onShowAuth={() => setShowAuth(true)}
+      onSignOut={signOut}
+    />
+  );
 
   return (
     <div className="min-h-screen bg-background text-foreground selection:bg-primary/20">
@@ -76,13 +119,33 @@ export function MealBuilder() {
                 O<span className="text-primary">'</span>Clock
               </h1>
             </div>
-            <div className="text-right">
-              <span className="font-mono text-[10px] uppercase tracking-widest text-muted-foreground">
-                Cook time
-              </span>
-              <p className="font-semibold text-sm tabular-nums">
-                {summary.prep > 0 ? `~${summary.prep} min` : "— min"}
-              </p>
+            <div className="flex items-end gap-4">
+              <div className="text-right">
+                <span className="font-mono text-[10px] uppercase tracking-widest text-muted-foreground">
+                  Cook time
+                </span>
+                <p className="font-semibold text-sm tabular-nums">
+                  {summary.prep > 0 ? `~${summary.prep} min` : "— min"}
+                </p>
+              </div>
+              {loading ? null : user ? (
+                <button
+                  onClick={signOut}
+                  className="size-9 rounded-full bg-primary/10 grid place-items-center hover:bg-primary/20 transition-colors"
+                  aria-label="Sign out"
+                  title={`Signed in as ${user.email}`}
+                >
+                  <User className="size-4 text-primary" />
+                </button>
+              ) : (
+                <button
+                  onClick={() => setShowAuth(true)}
+                  className="size-9 rounded-full bg-muted grid place-items-center hover:bg-primary/10 transition-colors"
+                  aria-label="Sign in"
+                >
+                  <LogIn className="size-4 text-muted-foreground" />
+                </button>
+              )}
             </div>
           </div>
 
@@ -162,7 +225,7 @@ export function MealBuilder() {
             disabled={!canAdvance}
             className="w-full bg-primary hover:bg-primary/90 disabled:opacity-40 disabled:cursor-not-allowed text-primary-foreground font-extrabold uppercase py-4 rounded-xl transition-all active:scale-[0.98] tracking-widest text-sm flex items-center justify-center gap-2"
           >
-            {isLast ? (<><BookmarkCheck className="size-4" /> Save my meal</>) : (<>Continue <ArrowRight className="size-4" /></>)}
+            {isLast ? (<><BookmarkCheck className="size-4" /> Confirm meal</>) : (<>Continue <ArrowRight className="size-4" /></>)}
           </button>
         </footer>
       </div>
@@ -259,12 +322,18 @@ function RowTile({ item, selected, onToggle }: { item: Item; selected: boolean; 
 }
 
 function ConfirmedScreen({
-  summary, onReset, selection, allItemsFlat,
+  summary, onReset, selection, allItemsFlat, user, saving, saved, onSave, onShowAuth, onSignOut,
 }: {
   summary: { cal: number; protein: number; carbs: number; fat: number; prep: number; count: number };
   onReset: () => void;
   selection: Selection;
   allItemsFlat: Map<string, { item: Item; stepKey: string; stepLabel: string }>;
+  user: import("@supabase/supabase-js").User | null;
+  saving: boolean;
+  saved: boolean;
+  onSave: () => void;
+  onShowAuth: () => void;
+  onSignOut: () => void;
 }) {
   const mealNum = useMemo(() => String(Math.floor(Math.random() * 9000) + 1000), []);
   const items = Object.values(selection).flat().map((id) => id ? allItemsFlat.get(id) : undefined).filter(Boolean) as { item: Item; stepKey: string; stepLabel: string }[];
@@ -311,9 +380,46 @@ function ConfirmedScreen({
             ))}
           </div>
 
+          {user ? (
+            <div className="mt-8 space-y-3">
+              {saved ? (
+                <div className="rounded-xl border border-primary/30 bg-primary/5 px-4 py-3 text-xs text-primary font-semibold text-center animate-fade-in">
+                  Meal saved to your account!
+                </div>
+              ) : (
+                <button
+                  onClick={onSave}
+                  disabled={saving}
+                  className="w-full bg-primary hover:bg-primary/90 disabled:opacity-40 text-primary-foreground font-extrabold uppercase py-4 rounded-xl tracking-widest text-sm active:scale-[0.98] transition-all flex items-center justify-center gap-2"
+                >
+                  <BookmarkCheck className="size-4" />
+                  {saving ? "Saving..." : "Save my meal"}
+                </button>
+              )}
+              <button
+                onClick={onSignOut}
+                className="w-full border border-border hover:bg-muted font-medium uppercase py-3 rounded-xl tracking-widest text-xs flex items-center justify-center gap-2 transition-colors text-muted-foreground"
+              >
+                <LogOut className="size-3.5" /> Sign out
+              </button>
+            </div>
+          ) : (
+            <div className="mt-8 space-y-3">
+              <button
+                onClick={onShowAuth}
+                className="w-full bg-primary hover:bg-primary/90 text-primary-foreground font-extrabold uppercase py-4 rounded-xl tracking-widest text-sm active:scale-[0.98] transition-all flex items-center justify-center gap-2"
+              >
+                <LogIn className="size-4" /> Sign in to save
+              </button>
+              <p className="text-[10px] text-muted-foreground text-center">
+                Create an account to save your meals and access them anytime.
+              </p>
+            </div>
+          )}
+
           <button
             onClick={onReset}
-            className="mt-10 w-full bg-foreground text-background font-extrabold uppercase py-4 rounded-xl tracking-widest text-sm active:scale-[0.98] transition-transform"
+            className="mt-6 w-full bg-foreground text-background font-extrabold uppercase py-4 rounded-xl tracking-widest text-sm active:scale-[0.98] transition-transform"
           >
             Build another
           </button>
